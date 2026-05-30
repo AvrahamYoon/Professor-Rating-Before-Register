@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Professor Rating Before Register",
+  "version": "0.1.0",
+  "description": "Shows Rate My Professors ratings next to BYU-Idaho instructors during registration.",
+  "permissions": [],
+  "host_permissions": [
+    "https://*.byui.edu/*",
+    "https://www.ratemyprofessors.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.byui.edu/*"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
