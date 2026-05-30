@@ -126,18 +126,33 @@ function pickBestMatch(candidates, searchName) {
   if (candidates.length === 0) return null;
 
   const searchTokens = tokenize(searchName);
+  const requiredFirstName = searchTokens[0];
   const requiredLastName = searchTokens[searchTokens.length - 1];
   const scored = candidates.map((candidate) => {
     const fullName = `${candidate.firstName ?? ""} ${candidate.lastName ?? ""}`;
     const candidateTokens = tokenize(fullName);
+    const candidateFirstName = tokenize(candidate.firstName)[0];
+    const candidateLastName = tokenize(candidate.lastName)[0];
+    const firstNameMatch =
+      requiredFirstName &&
+      candidateFirstName &&
+      (candidateFirstName === requiredFirstName || candidateFirstName[0] === requiredFirstName[0]);
+    const lastNameMatch = requiredLastName && candidateLastName === requiredLastName;
+
+    if (!firstNameMatch || !lastNameMatch) {
+      return {
+        candidate,
+        score: -Infinity,
+      };
+    }
+
     const overlap = searchTokens.filter((token) => candidateTokens.includes(token)).length;
-    const lastNameMatch = requiredLastName && candidateTokens.includes(requiredLastName) ? 2 : -2;
     const schoolMatch = isByuiSchool(candidate.school) ? 3 : -3;
     const ratingCountBoost = Math.min(Number(candidate.numRatings) || 0, 20) / 100;
 
     return {
       candidate,
-      score: overlap + lastNameMatch + schoolMatch + ratingCountBoost,
+      score: overlap + 2 + schoolMatch + ratingCountBoost,
     };
   });
 
@@ -189,8 +204,6 @@ function getSearchNameVariants(name) {
   if (parts.length >= 2 && first && last) {
     variants.push(`${first[0]} ${last}`);
     variants.push(`${first[0]}. ${last}`);
-    variants.push(first);
-    variants.push(last);
   }
 
   return Array.from(new Set(variants.map(normalizeName).filter(Boolean)));
