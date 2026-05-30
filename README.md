@@ -16,4 +16,4 @@ The MVP targets instructor cells that match:
 td[id^="pg0_V_rptCourses_"][id$="_litFacultyValue"] li
 ```
 
-BYU-Idaho names such as `Kay, Aaron` are normalized to `Aaron Kay` before searching RMP.
+BYU-Idaho names such as `Smith, Brigham` are normalized to `Brigham Smith` before searching RMP.
