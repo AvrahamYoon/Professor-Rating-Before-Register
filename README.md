@@ -16,7 +16,7 @@ This is currently an MVP. It has no build step and can be loaded directly as an 
 
 - Scans the BYU-Idaho course results table.
 - Finds the visible `Instructor` column, including pages where Footable hides the original instructor cell.
-- Normalizes BYU-Idaho names such as `Godderidge, Gary` to `Gary Godderidge`.
+- Normalizes BYU-Idaho names such as `Example, Jane` to `Jane Example`.
 - Looks up professor ratings through Rate My Professors GraphQL from the extension background service worker.
 - Injects a small badge next to each professor name:
   - `RMP 4.2` when a rating is found.
