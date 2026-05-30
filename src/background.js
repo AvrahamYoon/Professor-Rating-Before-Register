@@ -49,13 +49,33 @@ async function searchProfessor(name) {
   if (!normalizedName) return null;
 
   const searchNames = getSearchNameVariants(normalizedName);
+  console.info("[PRBR] RMP lookup variants", { name: normalizedName, searchNames });
 
   for (const searchName of searchNames) {
-    const candidates = await fetchProfessorCandidates(searchName);
-    const professor = pickBestMatch(candidates, normalizedName);
+    try {
+      const candidates = await fetchProfessorCandidates(searchName);
+      console.info("[PRBR] RMP candidates", {
+        name: normalizedName,
+        searchName,
+        candidates: candidates.map((candidate) => ({
+          name: `${candidate.firstName ?? ""} ${candidate.lastName ?? ""}`.trim(),
+          department: candidate.department,
+          school: candidate.school?.name,
+          legacyId: candidate.legacyId,
+        })),
+      });
 
-    if (professor) {
-      return toRatingResult(professor);
+      const professor = pickBestMatch(candidates, normalizedName);
+
+      if (professor) {
+        return toRatingResult(professor);
+      }
+    } catch (error) {
+      console.warn("[PRBR] RMP variant failed", {
+        name: normalizedName,
+        searchName,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -97,21 +117,24 @@ function pickBestMatch(candidates, searchName) {
   if (candidates.length === 0) return null;
 
   const searchTokens = tokenize(searchName);
+  const requiredLastName = searchTokens[searchTokens.length - 1];
   const scored = candidates.map((candidate) => {
     const fullName = `${candidate.firstName ?? ""} ${candidate.lastName ?? ""}`;
     const candidateTokens = tokenize(fullName);
     const overlap = searchTokens.filter((token) => candidateTokens.includes(token)).length;
+    const lastNameMatch = requiredLastName && candidateTokens.includes(requiredLastName) ? 2 : -2;
     const schoolMatch = candidate.school?.id === BYUI_SCHOOL_ID ? 2 : 0;
     const ratingCountBoost = Math.min(Number(candidate.numRatings) || 0, 20) / 100;
 
     return {
       candidate,
-      score: overlap + schoolMatch + ratingCountBoost,
+      score: overlap + lastNameMatch + schoolMatch + ratingCountBoost,
     };
   });
 
   scored.sort((a, b) => b.score - a.score);
-  return scored[0]?.candidate ?? null;
+  const best = scored[0];
+  return best?.score > 0 ? best.candidate : null;
 }
 
 function toRatingResult(professor) {
@@ -136,10 +159,10 @@ function getSearchNameVariants(name) {
   const cleaned = normalizeName(name).replace(/\s+/g, " ");
   const parts = cleaned.split(" ").filter(Boolean);
   const variants = [cleaned];
+  const first = parts[0];
+  const last = parts[parts.length - 1];
 
   if (parts.length >= 3) {
-    const first = parts[0];
-    const last = parts[parts.length - 1];
     variants.push(`${first} ${last}`);
   }
 
@@ -149,8 +172,11 @@ function getSearchNameVariants(name) {
 
   variants.push(withoutSingleLetterInitials);
 
-  if (parts.length >= 2) {
-    variants.push(parts[parts.length - 1]);
+  if (parts.length >= 2 && first && last) {
+    variants.push(`${first[0]} ${last}`);
+    variants.push(`${first[0]}. ${last}`);
+    variants.push(first);
+    variants.push(last);
   }
 
   return Array.from(new Set(variants.map(normalizeName).filter(Boolean)));
