@@ -1,31 +1,55 @@
 const FACULTY_CELL_SELECTOR = 'td[id^="pg0_V_rptCourses_"][id$="_litFacultyValue"]';
 const INJECTED_ATTR = "data-rmp-injected";
+const INJECTED_NAME_ATTR = "data-rmp-professor-name";
 const CACHE_PREFIX = "prbr:rmp:";
 const CACHE_TTL_MS = 1000 * 60 * 60 * 6;
 const EMPTY_CACHE_TTL_MS = 1000 * 60 * 20;
 const MESSAGE_TIMEOUT_MS = 10000;
+const LOOKUP_RETRY_DELAY_MS = 2500;
+const UI_LOADING_NOTICE_MS = 5000;
+const LOADING_SYNC_INTERVAL_MS = 1000;
 
 const pendingLookups = new Map();
 let scanTimer = null;
+let loadingSyncTimer = null;
 let popoverEventsBound = false;
+let popoverFrame = null;
+let nextLookupId = 0;
 
 console.info("[PRBR] content script loaded");
 showLoadedMarker();
 scanAndInject();
 observePageChanges();
+startLoadingSync();
 
 function observePageChanges() {
   if (!document.body) return;
 
-  const observer = new MutationObserver(() => {
-    window.clearTimeout(scanTimer);
-    scanTimer = window.setTimeout(scanAndInject, 250);
+  const observer = new MutationObserver((mutations) => {
+    if (mutations.every(isPrbrMutation)) return;
+    scheduleScan();
   });
 
   observer.observe(document.body, {
+    attributes: true,
     childList: true,
+    characterData: true,
     subtree: true,
   });
+
+  window.addEventListener("pageshow", scheduleScan);
+  window.addEventListener("focus", scheduleScan);
+}
+
+function isPrbrMutation(mutation) {
+  const target = mutation.target;
+  if (!(target instanceof Element)) return false;
+  return Boolean(target.closest(".prbr-host") || target.id === "prbr-styles" || target.id === "prbr-loaded-marker");
+}
+
+function scheduleScan() {
+  window.clearTimeout(scanTimer);
+  scanTimer = window.setTimeout(scanAndInject, 250);
 }
 
 function scanAndInject() {
@@ -98,7 +122,6 @@ function showLoadedMarker() {
 
 function injectForElement(element) {
   if (!(element instanceof HTMLElement)) return;
-  if (element.getAttribute(INJECTED_ATTR) === "true") return;
 
   const byuiName = getOwnText(element);
   const professorName = normalizeByuiName(byuiName);
@@ -108,7 +131,18 @@ function injectForElement(element) {
     return;
   }
 
+  if (element.getAttribute(INJECTED_ATTR) === "true") {
+    const injectedName = element.getAttribute(INJECTED_NAME_ATTR);
+    if (injectedName === professorName) return;
+
+    element.querySelectorAll(":scope > .prbr-host").forEach((host) => host.remove());
+    element.removeAttribute(INJECTED_ATTR);
+    element.removeAttribute(INJECTED_NAME_ATTR);
+    console.info("[PRBR] reinjecting changed instructor cell", { injectedName, professorName });
+  }
+
   element.setAttribute(INJECTED_ATTR, "true");
+  element.setAttribute(INJECTED_NAME_ATTR, professorName);
   injectShell(element, professorName);
 }
 
@@ -118,31 +152,108 @@ function injectShell(item, professorName) {
 
   const host = document.createElement("span");
   host.className = "prbr-host";
+  host.dataset.professorName = professorName;
   host.style.cssText = "display:inline-block;margin-left:8px;vertical-align:baseline;";
   host.append(createBadge("loading", "RMP ...", "Looking up Rate My Professors rating"));
   item.append(host);
   console.info("[PRBR] injected loading badge", { professorName, item });
 
-  getProfessorRating(professorName)
+  renderRatingIntoHost(host, professorName, 0);
+}
+
+function renderRatingIntoHost(host, professorName, attempt, options = {}) {
+  const lookupId = String(++nextLookupId);
+  host.dataset.rmpLookupId = lookupId;
+
+  const lookup = getProfessorRating(professorName, options);
+  let settled = false;
+
+  window.setTimeout(() => {
+    if (settled || !isCurrentLookup(host, lookupId)) return;
+    console.info("[PRBR] RMP lookup still waiting; keeping current request alive", { professorName, attempt });
+    host.replaceChildren(createBadge("loading", "RMP ...", "Still waiting for Rate My Professors"));
+  }, UI_LOADING_NOTICE_MS);
+
+  lookup
     .then((rating) => {
+      if (!isCurrentLookup(host, lookupId)) return;
+      settled = true;
+      console.info("[PRBR] RMP result received; refreshing badge", { professorName, rating });
       host.replaceChildren(createRatingView(rating, professorName));
+      refreshLoadingBadgesForProfessor(professorName, rating);
     })
-    .catch(() => {
+    .catch((error) => {
+      if (!isCurrentLookup(host, lookupId)) return;
+      settled = true;
+
+      if (attempt < 1) {
+        console.info("[PRBR] retrying RMP lookup", {
+          professorName,
+          error: error instanceof Error ? error.message : String(error),
+        });
+
+        window.setTimeout(() => {
+          if (!host.isConnected) return;
+          host.replaceChildren(createBadge("loading", "RMP ...", "Retrying Rate My Professors rating"));
+          renderRatingIntoHost(host, professorName, attempt + 1, { bypassPending: true });
+        }, LOOKUP_RETRY_DELAY_MS);
+        return;
+      }
+
       host.replaceChildren(createBadge("unavailable", "RMP unavailable", "Could not load Rate My Professors"));
     });
 }
 
-async function getProfessorRating(professorName) {
-  const cacheKey = `${CACHE_PREFIX}${professorName.toLowerCase()}`;
+function isCurrentLookup(host, lookupId) {
+  return host.isConnected && host.dataset.rmpLookupId === lookupId;
+}
+
+function startLoadingSync() {
+  if (loadingSyncTimer !== null) return;
+
+  loadingSyncTimer = window.setInterval(syncLoadingBadgesFromCache, LOADING_SYNC_INTERVAL_MS);
+}
+
+function syncLoadingBadgesFromCache() {
+  const loadingHosts = document.querySelectorAll(".prbr-host");
+  for (const host of loadingHosts) {
+    if (!(host instanceof HTMLElement)) continue;
+    if (!host.querySelector(".badge.loading")) continue;
+
+    const professorName = host.dataset.professorName;
+    if (!professorName) continue;
+
+    const cached = readCache(getCacheKey(professorName));
+    if (cached === undefined) continue;
+
+    console.info("[PRBR] refreshing loading badge from cache", { professorName, cached });
+    host.replaceChildren(createRatingView(cached, professorName));
+  }
+}
+
+function refreshLoadingBadgesForProfessor(professorName, rating) {
+  for (const host of document.querySelectorAll(".prbr-host")) {
+    if (!(host instanceof HTMLElement)) continue;
+    if (host.dataset.professorName !== professorName) continue;
+    if (!host.querySelector(".badge.loading")) continue;
+
+    console.info("[PRBR] refreshing matching loading badge", { professorName, rating });
+    host.replaceChildren(createRatingView(rating, professorName));
+  }
+}
+
+async function getProfessorRating(professorName, options = {}) {
+  const cacheKey = getCacheKey(professorName);
   const cached = readCache(cacheKey);
   if (cached !== undefined) return cached;
 
-  if (pendingLookups.has(cacheKey)) {
+  if (!options.bypassPending && pendingLookups.has(cacheKey)) {
     return pendingLookups.get(cacheKey);
   }
 
   const lookup = sendMessageWithTimeout({ type: "RMP_LOOKUP", name: professorName }, MESSAGE_TIMEOUT_MS)
     .then((response) => {
+      console.info("[PRBR] RMP message response received", { professorName, response });
       if (!response?.ok) {
         throw new Error(response?.error ?? "RMP lookup failed");
       }
@@ -151,11 +262,17 @@ async function getProfessorRating(professorName) {
       return response.result;
     })
     .finally(() => {
-      pendingLookups.delete(cacheKey);
+      if (pendingLookups.get(cacheKey) === lookup) {
+        pendingLookups.delete(cacheKey);
+      }
     });
 
   pendingLookups.set(cacheKey, lookup);
   return lookup;
+}
+
+function getCacheKey(professorName) {
+  return `${CACHE_PREFIX}${professorName.toLowerCase()}`;
 }
 
 function sendMessageWithTimeout(message, timeoutMs) {
@@ -290,6 +407,9 @@ function ensurePopoverEvents() {
       closeOpenPopovers();
     }
   });
+
+  window.addEventListener("resize", scheduleOpenPopoverUpdate);
+  window.addEventListener("scroll", scheduleOpenPopoverUpdate, true);
 }
 
 function togglePopover(container) {
@@ -306,9 +426,7 @@ function togglePopover(container) {
 
 function closeOpenPopovers() {
   for (const root of document.querySelectorAll(".prbr-popover-root.open")) {
-    root.classList.remove("open");
-    root.classList.remove("align-right");
-    root.querySelector(".badge")?.setAttribute("aria-expanded", "false");
+    closePopover(root);
   }
 }
 
@@ -320,8 +438,18 @@ function positionPopover(container) {
 
   container.classList.remove("align-right");
   const triggerRect = trigger.getBoundingClientRect();
+  if (!isRectInViewport(triggerRect)) {
+    closePopover(container);
+    return;
+  }
+
   const cardWidth = Math.min(280, window.innerWidth - 32);
-  const top = Math.min(triggerRect.bottom + 8, window.innerHeight - 16);
+  const cardHeight = Math.min(card.offsetHeight || 0, window.innerHeight - 32);
+  const preferredTop = triggerRect.bottom + 8;
+  const top =
+    preferredTop + cardHeight > window.innerHeight - 16
+      ? Math.max(16, triggerRect.top - cardHeight - 8)
+      : preferredTop;
   const left = triggerRect.left;
 
   card.style.setProperty("--prbr-card-top", `${top}px`);
@@ -333,6 +461,33 @@ function positionPopover(container) {
     card.style.setProperty("--prbr-card-left", "auto");
     card.style.setProperty("--prbr-card-right", "16px");
   }
+}
+
+function scheduleOpenPopoverUpdate() {
+  if (popoverFrame !== null) return;
+
+  popoverFrame = window.requestAnimationFrame(() => {
+    popoverFrame = null;
+    updateOpenPopovers();
+  });
+}
+
+function updateOpenPopovers() {
+  for (const root of document.querySelectorAll(".prbr-popover-root.open")) {
+    if (root instanceof HTMLElement) {
+      positionPopover(root);
+    }
+  }
+}
+
+function closePopover(root) {
+  root.classList.remove("open");
+  root.classList.remove("align-right");
+  root.querySelector(".badge")?.setAttribute("aria-expanded", "false");
+}
+
+function isRectInViewport(rect) {
+  return rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
 }
 
 function ensurePageStyles() {
