@@ -1,5 +1,6 @@
 const GRAPHQL_URL = "https://www.ratemyprofessors.com/graphql";
 const BYUI_SCHOOL_ID = "U2Nob29sLTEzMzc=";
+const FETCH_TIMEOUT_MS = 8000;
 
 const SEARCH_TEACHERS_QUERY = `
   query SearchTeacher($query: TeacherSearchQuery!) {
@@ -47,8 +48,27 @@ async function searchProfessor(name) {
   const normalizedName = normalizeName(name);
   if (!normalizedName) return null;
 
+  const searchNames = getSearchNameVariants(normalizedName);
+
+  for (const searchName of searchNames) {
+    const candidates = await fetchProfessorCandidates(searchName);
+    const professor = pickBestMatch(candidates, normalizedName);
+
+    if (professor) {
+      return toRatingResult(professor);
+    }
+  }
+
+  return null;
+}
+
+async function fetchProfessorCandidates(searchName) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
   const response = await fetch(GRAPHQL_URL, {
     method: "POST",
+    signal: controller.signal,
     headers: {
       "Content-Type": "application/json",
       "Authorization": "Basic dGVzdDp0ZXN0",
@@ -57,12 +77,12 @@ async function searchProfessor(name) {
       query: SEARCH_TEACHERS_QUERY,
       variables: {
         query: {
-          text: normalizedName,
+          text: searchName,
           schoolID: BYUI_SCHOOL_ID,
         },
       },
     }),
-  });
+  }).finally(() => clearTimeout(timeoutId));
 
   if (!response.ok) {
     throw new Error(`RMP responded with ${response.status}`);
@@ -70,10 +90,7 @@ async function searchProfessor(name) {
 
   const payload = await response.json();
   const edges = payload?.data?.newSearch?.teachers?.edges ?? [];
-  const candidates = edges.map((edge) => edge?.node).filter(Boolean);
-  const professor = pickBestMatch(candidates, normalizedName);
-
-  return professor ? toRatingResult(professor) : null;
+  return edges.map((edge) => edge?.node).filter(Boolean);
 }
 
 function pickBestMatch(candidates, searchName) {
@@ -113,6 +130,30 @@ function toRatingResult(professor) {
 
 function normalizeName(value) {
   return String(value ?? "").replace(/\s+/g, " ").trim();
+}
+
+function getSearchNameVariants(name) {
+  const cleaned = normalizeName(name).replace(/\s+/g, " ");
+  const parts = cleaned.split(" ").filter(Boolean);
+  const variants = [cleaned];
+
+  if (parts.length >= 3) {
+    const first = parts[0];
+    const last = parts[parts.length - 1];
+    variants.push(`${first} ${last}`);
+  }
+
+  const withoutSingleLetterInitials = parts
+    .filter((part, index) => index === 0 || index === parts.length - 1 || !/^[A-Z]\.?$/i.test(part))
+    .join(" ");
+
+  variants.push(withoutSingleLetterInitials);
+
+  if (parts.length >= 2) {
+    variants.push(parts[parts.length - 1]);
+  }
+
+  return Array.from(new Set(variants.map(normalizeName).filter(Boolean)));
 }
 
 function tokenize(value) {

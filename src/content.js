@@ -2,6 +2,7 @@ const FACULTY_CELL_SELECTOR = 'td[id^="pg0_V_rptCourses_"][id$="_litFacultyValue
 const INJECTED_ATTR = "data-rmp-injected";
 const CACHE_PREFIX = "prbr:rmp:";
 const CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+const MESSAGE_TIMEOUT_MS = 10000;
 
 const pendingLookups = new Map();
 let scanTimer = null;
@@ -137,8 +138,7 @@ async function getProfessorRating(professorName) {
     return pendingLookups.get(cacheKey);
   }
 
-  const lookup = chrome.runtime
-    .sendMessage({ type: "RMP_LOOKUP", name: professorName })
+  const lookup = sendMessageWithTimeout({ type: "RMP_LOOKUP", name: professorName }, MESSAGE_TIMEOUT_MS)
     .then((response) => {
       if (!response?.ok) {
         throw new Error(response?.error ?? "RMP lookup failed");
@@ -153,6 +153,25 @@ async function getProfessorRating(professorName) {
 
   pendingLookups.set(cacheKey, lookup);
   return lookup;
+}
+
+function sendMessageWithTimeout(message, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error("RMP lookup timed out"));
+    }, timeoutMs);
+
+    chrome.runtime.sendMessage(message, (response) => {
+      window.clearTimeout(timeoutId);
+
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      resolve(response);
+    });
+  });
 }
 
 function createRatingView(rating, professorName) {
