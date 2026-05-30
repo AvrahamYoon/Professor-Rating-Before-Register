@@ -1,4 +1,4 @@
-const FACULTY_ITEM_SELECTOR = 'td[id^="pg0_V_rptCourses_"][id$="_litFacultyValue"] li';
+const FACULTY_CELL_SELECTOR = 'td[id^="pg0_V_rptCourses_"][id$="_litFacultyValue"]';
 const INJECTED_ATTR = "data-rmp-injected";
 const CACHE_PREFIX = "prbr:rmp:";
 const CACHE_TTL_MS = 1000 * 60 * 60 * 6;
@@ -6,6 +6,8 @@ const CACHE_TTL_MS = 1000 * 60 * 60 * 6;
 const pendingLookups = new Map();
 let scanTimer = null;
 
+console.info("[PRBR] content script loaded");
+showLoadedMarker();
 scanAndInject();
 observePageChanges();
 
@@ -24,36 +26,105 @@ function observePageChanges() {
 }
 
 function scanAndInject() {
-  const facultyItems = document.querySelectorAll(FACULTY_ITEM_SELECTOR);
+  const facultyCells = getFacultyTargets();
+  console.info(`[PRBR] found ${facultyCells.length} instructor cells`);
 
-  for (const item of facultyItems) {
-    if (!(item instanceof HTMLElement)) continue;
-    if (item.getAttribute(INJECTED_ATTR) === "true") continue;
+  for (const cell of facultyCells) {
+    if (!(cell instanceof HTMLElement)) continue;
 
-    const byuiName = item.textContent ?? "";
-    const professorName = normalizeByuiName(byuiName);
-    if (!professorName || isPlaceholderName(professorName)) continue;
+    const nameElements = cell.querySelectorAll("li");
+    if (nameElements.length > 0) {
+      for (const item of nameElements) {
+        injectForElement(item);
+      }
+      continue;
+    }
 
-    item.setAttribute(INJECTED_ATTR, "true");
-    injectShell(item, professorName);
+    injectForElement(cell);
   }
 }
 
+function getFacultyTargets() {
+  const visibleTargets = getVisibleInstructorCells();
+  if (visibleTargets.length > 0) return visibleTargets;
+
+  return Array.from(document.querySelectorAll(FACULTY_CELL_SELECTOR));
+}
+
+function getVisibleInstructorCells() {
+  const table = document.querySelector("#tableCourses");
+  if (!(table instanceof HTMLTableElement)) return [];
+
+  const headers = Array.from(table.querySelectorAll("thead tr.footable-header th"));
+  const visibleHeaders = headers.filter(isVisibleElement);
+  const instructorIndex = visibleHeaders.findIndex(
+    (header) => normalizeText(header.textContent).toLowerCase() === "instructor",
+  );
+
+  if (instructorIndex < 0) return [];
+
+  return Array.from(table.tBodies)
+    .flatMap((body) => Array.from(body.rows))
+    .filter((row) => !row.classList.contains("footable-detail-row"))
+    .map((row) => Array.from(row.cells).filter(isVisibleElement)[instructorIndex])
+    .filter((cell) => cell instanceof HTMLElement);
+}
+
+function showLoadedMarker() {
+  if (document.getElementById("prbr-loaded-marker")) return;
+
+  const marker = document.createElement("div");
+  marker.id = "prbr-loaded-marker";
+  marker.textContent = "PRBR loaded";
+  marker.style.cssText = [
+    "position:fixed",
+    "right:12px",
+    "bottom:12px",
+    "z-index:2147483647",
+    "padding:6px 8px",
+    "border-radius:4px",
+    "background:#1f2933",
+    "color:#fff",
+    "font:12px Arial,sans-serif",
+    "box-shadow:0 2px 8px rgba(0,0,0,.25)",
+  ].join(";");
+
+  document.documentElement.append(marker);
+  window.setTimeout(() => marker.remove(), 4000);
+}
+
+function injectForElement(element) {
+  if (!(element instanceof HTMLElement)) return;
+  if (element.getAttribute(INJECTED_ATTR) === "true") return;
+
+  const byuiName = getOwnText(element);
+  const professorName = normalizeByuiName(byuiName);
+  console.info("[PRBR] instructor text", { byuiName, professorName, element });
+  if (!professorName || isPlaceholderName(professorName)) {
+    console.info("[PRBR] skipped instructor cell", { byuiName, professorName });
+    return;
+  }
+
+  element.setAttribute(INJECTED_ATTR, "true");
+  injectShell(element, professorName);
+}
+
 function injectShell(item, professorName) {
+  ensurePageStyles();
+
   const host = document.createElement("span");
   host.className = "prbr-host";
-  host.style.marginLeft = "8px";
-
-  const shadow = host.attachShadow({ mode: "open" });
-  shadow.append(createStyles(), createBadge("loading", "RMP ...", "Looking up Rate My Professors rating"));
+  host.style.cssText = "display:inline-block;margin-left:8px;vertical-align:baseline;";
+  host.append(createBadge("loading", "RMP ...", "Looking up Rate My Professors rating"));
   item.append(host);
+  console.info("[PRBR] injected loading badge", { professorName, item });
 
   getProfessorRating(professorName)
     .then((rating) => {
-      shadow.replaceChildren(createStyles(), createRatingView(rating, professorName));
+      host.replaceChildren(createRatingView(rating, professorName));
     })
     .catch(() => {
-      shadow.replaceChildren(createStyles(), createBadge("unavailable", "RMP unavailable", "Could not load Rate My Professors"));
+      host.replaceChildren(createBadge("unavailable", "RMP unavailable", "Could not load Rate My Professors"));
     });
 }
 
@@ -123,22 +194,25 @@ function createBadge(state, text, title) {
   return badge;
 }
 
-function createStyles() {
+function ensurePageStyles() {
+  if (document.getElementById("prbr-styles")) return;
+
   const style = document.createElement("style");
+  style.id = "prbr-styles";
   style.textContent = `
-    :host {
+    .prbr-host {
       display: inline-block;
       position: relative;
       font-family: Arial, sans-serif;
       vertical-align: baseline;
     }
 
-    .rating-wrap {
+    .prbr-host .rating-wrap {
       display: inline-block;
       position: relative;
     }
 
-    .badge {
+    .prbr-host .badge {
       display: inline-flex;
       align-items: center;
       min-height: 18px;
@@ -154,31 +228,31 @@ function createStyles() {
       white-space: nowrap;
     }
 
-    .badge.good {
+    .prbr-host .badge.good {
       border-color: #248a45;
       background: #e8f6ed;
       color: #176233;
     }
 
-    .badge.ok {
+    .prbr-host .badge.ok {
       border-color: #b7791f;
       background: #fff4d6;
       color: #7a4d00;
     }
 
-    .badge.low,
-    .badge.unavailable,
-    .badge.missing {
+    .prbr-host .badge.low,
+    .prbr-host .badge.unavailable,
+    .prbr-host .badge.missing {
       border-color: #b8b8b8;
       background: #f5f5f5;
       color: #555;
     }
 
-    .badge.loading {
+    .prbr-host .badge.loading {
       color: #3f5f8f;
     }
 
-    .tooltip {
+    .prbr-host .tooltip {
       display: none;
       position: absolute;
       left: 0;
@@ -194,19 +268,19 @@ function createStyles() {
       line-height: 1.35;
     }
 
-    .tooltip strong,
-    .tooltip span {
+    .prbr-host .tooltip strong,
+    .prbr-host .tooltip span {
       display: block;
       margin: 2px 0;
     }
 
-    .rating-wrap:hover .tooltip,
-    .rating-wrap:focus-within .tooltip {
+    .prbr-host .rating-wrap:hover .tooltip,
+    .prbr-host .rating-wrap:focus-within .tooltip {
       display: block;
     }
   `;
 
-  return style;
+  document.documentElement.append(style);
 }
 
 function normalizeByuiName(rawName) {
@@ -220,6 +294,29 @@ function normalizeByuiName(rawName) {
   const [last, ...firstParts] = cleaned.split(",");
   const first = firstParts.join(",").trim();
   return `${first} ${last.trim()}`.replace(/\s+/g, " ").trim();
+}
+
+function getOwnText(element) {
+  const textParts = [];
+
+  for (const node of element.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      textParts.push(node.textContent ?? "");
+    }
+  }
+
+  const ownText = textParts.join(" ").trim();
+  return ownText || element.textContent || "";
+}
+
+function isVisibleElement(element) {
+  if (!(element instanceof HTMLElement)) return false;
+  const style = window.getComputedStyle(element);
+  return style.display !== "none" && style.visibility !== "hidden";
+}
+
+function normalizeText(value) {
+  return String(value ?? "").replace(/\s+/g, " ").trim();
 }
 
 function isPlaceholderName(name) {
