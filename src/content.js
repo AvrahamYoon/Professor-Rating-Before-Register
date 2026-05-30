@@ -2,10 +2,12 @@ const FACULTY_CELL_SELECTOR = 'td[id^="pg0_V_rptCourses_"][id$="_litFacultyValue
 const INJECTED_ATTR = "data-rmp-injected";
 const CACHE_PREFIX = "prbr:rmp:";
 const CACHE_TTL_MS = 1000 * 60 * 60 * 6;
+const EMPTY_CACHE_TTL_MS = 1000 * 60 * 20;
 const MESSAGE_TIMEOUT_MS = 10000;
 
 const pendingLookups = new Map();
 let scanTimer = null;
+let popoverEventsBound = false;
 
 console.info("[PRBR] content script loaded");
 showLoadedMarker();
@@ -112,6 +114,7 @@ function injectForElement(element) {
 
 function injectShell(item, professorName) {
   ensurePageStyles();
+  ensurePopoverEvents();
 
   const host = document.createElement("span");
   host.className = "prbr-host";
@@ -176,32 +179,69 @@ function sendMessageWithTimeout(message, timeoutMs) {
 
 function createRatingView(rating, professorName) {
   if (!rating) {
-    return createBadge("missing", "No RMP", `No Rate My Professors result found for ${professorName}`);
+    return createMissingView(professorName);
   }
 
   const container = document.createElement("span");
-  container.className = "rating-wrap";
+  container.className = "rating-wrap prbr-popover-root";
 
-  const link = document.createElement("a");
-  link.className = `badge ${ratingClass(rating.avgRating)}`;
-  link.href = rating.url;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  link.textContent = `RMP ${formatNumber(rating.avgRating)}`;
-  link.title = "Open Rate My Professors";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = `badge ${ratingClass(rating.avgRating)}`;
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.textContent = `RMP ${formatNumber(rating.avgRating)}`;
+  trigger.title = "View Rate My Professors summary";
 
-  const tooltip = document.createElement("span");
-  tooltip.className = "tooltip";
-  tooltip.innerHTML = `
-    <strong>${escapeHtml(rating.name || professorName)}</strong>
-    <span>${escapeHtml(rating.department || "Department unknown")}</span>
-    <span>Rating: ${formatNumber(rating.avgRating)} / 5</span>
-    <span>Difficulty: ${formatNumber(rating.avgDifficulty)} / 5</span>
-    <span>Reviews: ${rating.numRatings ?? 0}</span>
-    <span>Would take again: ${formatPercent(rating.wouldTakeAgainPercent)}</span>
+  const card = document.createElement("span");
+  card.className = "rmp-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-label", `Rate My Professors summary for ${rating.name || professorName}`);
+  card.innerHTML = `
+    <span class="card-header">
+      <span>
+        <strong>${escapeHtml(rating.name || professorName)}</strong>
+        <span class="department">${escapeHtml(rating.department || "Department unknown")}</span>
+      </span>
+      <span class="score ${ratingClass(rating.avgRating)}">${formatNumber(rating.avgRating)}</span>
+    </span>
+    <span class="metrics">
+      ${createMetric("Difficulty", `${formatNumber(rating.avgDifficulty)} / 5`)}
+      ${createMetric("Reviews", String(rating.numRatings ?? 0))}
+      ${createMetric("Would take again", formatPercent(rating.wouldTakeAgainPercent))}
+    </span>
+    <a class="rmp-link" href="${escapeAttribute(rating.url)}" target="_blank" rel="noopener noreferrer">Open on RMP</a>
   `;
 
-  container.append(link, tooltip);
+  container.append(trigger, card);
+  return container;
+}
+
+function createMissingView(professorName) {
+  const container = document.createElement("span");
+  container.className = "rating-wrap prbr-popover-root";
+
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "badge missing";
+  trigger.textContent = "No RMP";
+  trigger.title = `No Rate My Professors result found for ${professorName}`;
+  trigger.setAttribute("aria-expanded", "false");
+
+  const card = document.createElement("span");
+  card.className = "rmp-card missing-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-label", `No Rate My Professors result for ${professorName}`);
+  card.innerHTML = `
+    <span class="card-header">
+      <span>
+        <strong>${escapeHtml(professorName)}</strong>
+        <span class="department">No matching RMP profile found</span>
+      </span>
+    </span>
+    <span class="missing-note">Try clearing the page session cache if this professor recently appeared on RMP.</span>
+  `;
+
+  container.append(trigger, card);
   return container;
 }
 
@@ -211,6 +251,88 @@ function createBadge(state, text, title) {
   badge.textContent = text;
   badge.title = title;
   return badge;
+}
+
+function createMetric(label, value) {
+  return `
+    <span class="metric">
+      <span class="metric-label">${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </span>
+  `;
+}
+
+function ensurePopoverEvents() {
+  if (popoverEventsBound) return;
+  popoverEventsBound = true;
+
+  document.addEventListener("click", (event) => {
+    if (!(event.target instanceof Element)) return;
+
+    const trigger = event.target.closest(".prbr-popover-root .badge");
+    if (trigger) {
+      const root = trigger.closest(".prbr-popover-root");
+      if (root instanceof HTMLElement) {
+        event.preventDefault();
+        event.stopPropagation();
+        console.info("[PRBR] RMP badge click captured", { root, trigger });
+        togglePopover(root);
+      }
+      return;
+    }
+
+    if (event.target.closest(".prbr-popover-root")) return;
+    closeOpenPopovers();
+  }, true);
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      closeOpenPopovers();
+    }
+  });
+}
+
+function togglePopover(container) {
+  const isOpen = container.classList.contains("open");
+  closeOpenPopovers();
+
+  if (!isOpen) {
+    container.classList.add("open");
+    container.querySelector(".badge")?.setAttribute("aria-expanded", "true");
+    positionPopover(container);
+    console.info("[PRBR] opened RMP card", { container });
+  }
+}
+
+function closeOpenPopovers() {
+  for (const root of document.querySelectorAll(".prbr-popover-root.open")) {
+    root.classList.remove("open");
+    root.classList.remove("align-right");
+    root.querySelector(".badge")?.setAttribute("aria-expanded", "false");
+  }
+}
+
+function positionPopover(container) {
+  const card = container.querySelector(".rmp-card");
+  const trigger = container.querySelector(".badge");
+  if (!(card instanceof HTMLElement)) return;
+  if (!(trigger instanceof HTMLElement)) return;
+
+  container.classList.remove("align-right");
+  const triggerRect = trigger.getBoundingClientRect();
+  const cardWidth = Math.min(280, window.innerWidth - 32);
+  const top = Math.min(triggerRect.bottom + 8, window.innerHeight - 16);
+  const left = triggerRect.left;
+
+  card.style.setProperty("--prbr-card-top", `${top}px`);
+  card.style.setProperty("--prbr-card-left", `${left}px`);
+  card.style.setProperty("--prbr-card-right", "auto");
+
+  if (left + cardWidth > window.innerWidth - 16) {
+    container.classList.add("align-right");
+    card.style.setProperty("--prbr-card-left", "auto");
+    card.style.setProperty("--prbr-card-right", "16px");
+  }
 }
 
 function ensurePageStyles() {
@@ -234,17 +356,26 @@ function ensurePageStyles() {
     .prbr-host .badge {
       display: inline-flex;
       align-items: center;
+      justify-content: center;
       min-height: 18px;
       padding: 1px 6px;
       border-radius: 4px;
       border: 1px solid #b9c1cc;
       background: #f4f6f8;
       color: #1f2933;
+      cursor: pointer;
       font-size: 11px;
       font-weight: 700;
       line-height: 16px;
+      font-family: inherit;
       text-decoration: none;
       white-space: nowrap;
+    }
+
+    .prbr-host .badge:focus-visible,
+    .prbr-host .rmp-link:focus-visible {
+      outline: 2px solid #2563eb;
+      outline-offset: 2px;
     }
 
     .prbr-host .badge.good {
@@ -267,35 +398,140 @@ function ensurePageStyles() {
       color: #555;
     }
 
+    .prbr-host .badge.loading,
+    .prbr-host .badge.unavailable {
+      cursor: default;
+    }
+
     .prbr-host .badge.loading {
       color: #3f5f8f;
     }
 
-    .prbr-host .tooltip {
+    .prbr-host .rmp-card {
       display: none;
-      position: absolute;
-      left: 0;
-      top: 24px;
+      position: fixed;
+      left: var(--prbr-card-left, 16px);
+      right: var(--prbr-card-right, auto);
+      top: var(--prbr-card-top, 16px);
       z-index: 2147483647;
-      min-width: 190px;
-      padding: 8px 10px;
-      border-radius: 4px;
-      background: #1f2933;
-      color: #fff;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      width: 280px;
+      max-width: min(280px, calc(100vw - 32px));
+      padding: 12px;
+      border: 1px solid #d7dde5;
+      border-radius: 8px;
+      background: #fff;
+      color: #1f2933;
+      box-shadow: 0 12px 32px rgba(15, 23, 42, 0.22);
       font-size: 12px;
       line-height: 1.35;
     }
 
-    .prbr-host .tooltip strong,
-    .prbr-host .tooltip span {
+    .prbr-host .open .rmp-card {
       display: block;
-      margin: 2px 0;
     }
 
-    .prbr-host .rating-wrap:hover .tooltip,
-    .prbr-host .rating-wrap:focus-within .tooltip {
+    .prbr-host .align-right .rmp-card {
+      right: var(--prbr-card-right, 16px);
+      left: var(--prbr-card-left, auto);
+    }
+
+    .prbr-host .card-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+
+    .prbr-host .card-header strong,
+    .prbr-host .department,
+    .prbr-host .missing-note {
       display: block;
+    }
+
+    .prbr-host .card-header strong {
+      color: #111827;
+      font-size: 13px;
+      line-height: 1.25;
+    }
+
+    .prbr-host .department,
+    .prbr-host .missing-note,
+    .prbr-host .metric-label {
+      color: #5b6776;
+    }
+
+    .prbr-host .score {
+      min-width: 42px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 16px;
+      font-weight: 800;
+      line-height: 1;
+      text-align: center;
+    }
+
+    .prbr-host .score.good {
+      background: #e8f6ed;
+      color: #176233;
+    }
+
+    .prbr-host .score.ok {
+      background: #fff4d6;
+      color: #7a4d00;
+    }
+
+    .prbr-host .score.low,
+    .prbr-host .score.missing {
+      background: #f5f5f5;
+      color: #555;
+    }
+
+    .prbr-host .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .prbr-host .metric {
+      display: block;
+      min-width: 0;
+      padding: 8px;
+      border: 1px solid #e6eaf0;
+      border-radius: 6px;
+      background: #f8fafc;
+    }
+
+    .prbr-host .metric strong {
+      display: block;
+      margin-top: 2px;
+      color: #111827;
+      font-size: 12px;
+      line-height: 1.2;
+    }
+
+    .prbr-host .metric-label {
+      display: block;
+      min-height: 28px;
+      font-size: 10px;
+      line-height: 1.2;
+    }
+
+    .prbr-host .rmp-link {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 30px;
+      border-radius: 6px;
+      background: #111827;
+      color: #fff;
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    .prbr-host .missing-card {
+      width: 240px;
     }
   `;
 
@@ -366,7 +602,8 @@ function readCache(key) {
     if (!raw) return undefined;
 
     const entry = JSON.parse(raw);
-    if (Date.now() - entry.createdAt > CACHE_TTL_MS) {
+    const ttl = entry.value === null ? EMPTY_CACHE_TTL_MS : CACHE_TTL_MS;
+    if (Date.now() - entry.createdAt > ttl) {
       sessionStorage.removeItem(key);
       return undefined;
     }
@@ -398,4 +635,8 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
+}
+
+function escapeAttribute(value) {
+  return escapeHtml(value);
 }

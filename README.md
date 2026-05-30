@@ -22,8 +22,8 @@ This is currently an MVP. It has no build step and can be loaded directly as an 
   - `RMP 4.2` when a rating is found.
   - `No RMP` when no matching professor is returned.
   - `RMP unavailable` when the lookup fails or times out.
-- Shows a hover tooltip with rating, difficulty, review count, department, and would-take-again percentage.
-- Caches lookup results in `sessionStorage` for 6 hours.
+- Opens a compact professor card when an RMP badge is clicked, with rating, difficulty, review count, department, would-take-again percentage, and an RMP profile link.
+- Caches successful lookup results in `sessionStorage` for 6 hours and empty results for 20 minutes.
 
 ## Files
 
