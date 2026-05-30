@@ -1,5 +1,6 @@
 const GRAPHQL_URL = "https://www.ratemyprofessors.com/graphql";
-const BYUI_SCHOOL_ID = "U2Nob29sLTEzMzc=";
+const BYUI_SCHOOL_ID = "U2Nob29sLTE3NTQ=";
+const BYUI_SCHOOL_NAME = "brigham young university - idaho";
 const FETCH_TIMEOUT_MS = 8000;
 
 const SEARCH_TEACHERS_QUERY = `
@@ -52,39 +53,50 @@ async function searchProfessor(name) {
   console.info("[PRBR] RMP lookup variants", { name: normalizedName, searchNames });
 
   for (const searchName of searchNames) {
-    try {
-      const candidates = await fetchProfessorCandidates(searchName);
-      console.info("[PRBR] RMP candidates", {
-        name: normalizedName,
-        searchName,
-        candidates: candidates.map((candidate) => ({
-          name: `${candidate.firstName ?? ""} ${candidate.lastName ?? ""}`.trim(),
-          department: candidate.department,
-          school: candidate.school?.name,
-          legacyId: candidate.legacyId,
-        })),
-      });
+    for (const scopedToSchool of [true, false]) {
+      try {
+        const candidates = await fetchProfessorCandidates(searchName, scopedToSchool);
+        console.info("[PRBR] RMP candidates", {
+          name: normalizedName,
+          searchName,
+          scopedToSchool,
+          candidates: candidates.map((candidate) => ({
+            name: `${candidate.firstName ?? ""} ${candidate.lastName ?? ""}`.trim(),
+            department: candidate.department,
+            school: candidate.school?.name,
+            legacyId: candidate.legacyId,
+          })),
+        });
 
-      const professor = pickBestMatch(candidates, normalizedName);
+        const professor = pickBestMatch(candidates, normalizedName);
 
-      if (professor) {
-        return toRatingResult(professor);
+        if (professor) {
+          return toRatingResult(professor);
+        }
+      } catch (error) {
+        console.warn("[PRBR] RMP variant failed", {
+          name: normalizedName,
+          searchName,
+          scopedToSchool,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
-    } catch (error) {
-      console.warn("[PRBR] RMP variant failed", {
-        name: normalizedName,
-        searchName,
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
   }
 
   return null;
 }
 
-async function fetchProfessorCandidates(searchName) {
+async function fetchProfessorCandidates(searchName, scopedToSchool) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const query = {
+    text: searchName,
+  };
+
+  if (scopedToSchool) {
+    query.schoolID = BYUI_SCHOOL_ID;
+  }
 
   const response = await fetch(GRAPHQL_URL, {
     method: "POST",
@@ -96,10 +108,7 @@ async function fetchProfessorCandidates(searchName) {
     body: JSON.stringify({
       query: SEARCH_TEACHERS_QUERY,
       variables: {
-        query: {
-          text: searchName,
-          schoolID: BYUI_SCHOOL_ID,
-        },
+        query,
       },
     }),
   }).finally(() => clearTimeout(timeoutId));
@@ -123,7 +132,7 @@ function pickBestMatch(candidates, searchName) {
     const candidateTokens = tokenize(fullName);
     const overlap = searchTokens.filter((token) => candidateTokens.includes(token)).length;
     const lastNameMatch = requiredLastName && candidateTokens.includes(requiredLastName) ? 2 : -2;
-    const schoolMatch = candidate.school?.id === BYUI_SCHOOL_ID ? 2 : 0;
+    const schoolMatch = isByuiSchool(candidate.school) ? 3 : -3;
     const ratingCountBoost = Math.min(Number(candidate.numRatings) || 0, 20) / 100;
 
     return {
@@ -135,6 +144,11 @@ function pickBestMatch(candidates, searchName) {
   scored.sort((a, b) => b.score - a.score);
   const best = scored[0];
   return best?.score > 0 ? best.candidate : null;
+}
+
+function isByuiSchool(school) {
+  const schoolName = normalizeName(school?.name).toLowerCase();
+  return school?.id === BYUI_SCHOOL_ID || schoolName === BYUI_SCHOOL_NAME;
 }
 
 function toRatingResult(professor) {
