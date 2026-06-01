@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Prof Preview for BYUI",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shows Rate My Professors ratings next to BYU-Idaho instructors during registration.",
   "permissions": [],
   "host_permissions": [
