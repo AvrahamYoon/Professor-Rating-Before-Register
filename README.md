@@ -4,6 +4,15 @@ Minimal Chrome MV3 extension that injects Rate My Professors badges into BYU-Ida
 
 This is currently an MVP. It has no build step and can be loaded directly as an unpacked Chrome extension.
 
+## Tech Stack
+
+[![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black)](https://developer.mozilla.org/docs/Web/JavaScript)
+[![Chrome Extension MV3](https://img.shields.io/badge/Chrome%20Extension-MV3-4285F4?style=flat&logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/mv3/)
+[![GraphQL](https://img.shields.io/badge/GraphQL-E10098?style=flat&logo=graphql&logoColor=white)](https://graphql.org/)
+[![CSS3](https://img.shields.io/badge/CSS3-1572B6?style=flat&logo=css3&logoColor=white)](https://developer.mozilla.org/docs/Web/CSS)
+[![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=flat&logo=html5&logoColor=white)](https://developer.mozilla.org/docs/Web/HTML)
+[![Rate My Professors](https://img.shields.io/badge/Rate%20My%20Professors-API-111827?style=flat)](https://www.ratemyprofessors.com/)
+
 ## Install Locally
 
 1. Open `chrome://extensions`.
@@ -25,7 +34,7 @@ This is currently an MVP. It has no build step and can be loaded directly as an 
 - Opens a compact professor card when an RMP badge is clicked, with rating, difficulty, review count, department, would-take-again percentage, and an RMP profile link.
 - Caches successful lookup results in `sessionStorage` for 6 hours and empty results for 20 minutes.
 
-## Files
+## Project Structure
 
 - `manifest.json` configures the Chrome MV3 extension.
 - `src/content.js` scans the BYU-Idaho page and injects rating badges.
